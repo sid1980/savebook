@@ -1,5 +1,5 @@
 /*
-savebook -- A universal tool for making digital copies of books.
+savebook -- A universal instrument for making digital copies of books.
 
 Copyright (C) 2017 Slavko Udarnikov <uslavko@protonmail.com>
 
@@ -31,24 +31,18 @@ static void help()
 
 static void help_normalize()
 {
-  cout << "Usage: savebook <operation> [arguments...]\n" << endl;
+  cout << "Usage: normalize INPUT-IMAGE [OUTPUT-IMAGE]\n" << endl;
 }
 
 static void normalize_value( InputOutputArray hsv, int ksize );
 
-int normalize( int argc, char** argv )
+Mat imread_float( const string& filename, int flags=IMREAD_COLOR )
 {
-  if ( argc < 2 ) {
-	help_normalize();
-	return 1;
-  }
-
-  char* filename = argv[1];
-  Mat src = imread( filename, IMREAD_COLOR );
-
+  flags |= IMREAD_ANYDEPTH;
+  
+  Mat src = imread( filename, flags );
   if ( src.empty() ) {
-	cerr << "Image is empty.\n";
-	return 2;
+	return src;
   }
 
   Mat img;
@@ -67,8 +61,61 @@ int normalize( int argc, char** argv )
 	src.convertTo( img, CV_32F, 1.0D/65535, 0.0 );
 	break;
   default:
-	cerr << "Unsupported depth!\n";
-	return 4;
+	// FIXME
+	img = src;
+  }
+
+  return img;
+}
+
+bool imwrite_depth( const string& filename, InputArray img, int depth )
+{
+  Mat dst, _img;
+
+  _img = img.getMat();
+
+  if ( _img.depth() != depth ) {
+	switch ( depth ) {
+	case CV_8S:
+	  _img.convertTo( dst, CV_8S, 255, -128 );
+	  break;
+	case CV_8U:
+	  _img.convertTo( dst, CV_8U, 255, 0 );
+	  break;
+	case CV_16S:
+	  _img.convertTo( dst, CV_16S, 65535, -32768 );
+	  break;
+	case CV_16U:
+	  _img.convertTo( dst, CV_16U, 65535, 0 );
+	  break;
+	default:
+	  // FIXME
+	  dst = _img;
+	}
+  } else {
+	dst = _img;
+  }
+
+  return imwrite( filename, dst );
+}
+
+int normalize_page( int argc, char** argv )
+{
+  if ( argc < 2 ) {
+	help_normalize();
+	return 1;
+  }
+
+  char const *inname = argv[1];
+  char const *outname = "out.ppm";
+  if ( argc > 2 ) {
+	outname = argv[2];
+  }
+  
+  Mat img = imread_float( inname );
+  if ( img.empty() ) {
+	cerr << "Image is empty.\n";
+	return 2;
   }
 	
   cvtColor( img, img, COLOR_BGR2HSV );
@@ -77,27 +124,9 @@ int normalize( int argc, char** argv )
 
   cvtColor( img, img, COLOR_HSV2BGR );
 
-  Mat dst;
-
-  switch ( src.depth() ) {
-  case CV_8S:
-	img.convertTo( dst, CV_8S, 255, -128 );
-	break;
-  case CV_8U:
-	img.convertTo( dst, CV_32F, 255, 0 );
-	break;
-  case CV_16S:
-	img.convertTo( dst, CV_32F, 65535, -32768 );
-	break;
-  case CV_16U:
-	img.convertTo( dst, CV_32F, 65535, 0 );
-	break;
-  default:
-	cerr << "Unsupported depth!\n";
-	return 4;
-  }
-
-  if ( imwrite( "out.ppm", dst ) ) {
+  
+  
+  if ( imwrite_depth( outname, img, CV_8U ) ) {
 	return 0;
   } else {
 	cerr << "Error writing output image!\n";
@@ -113,19 +142,32 @@ static void normalize_value( InputOutputArray hsv, int ksize )
   Mat w = getStructuringElement( MORPH_RECT, Size(ksize, ksize) );
   Mat k = Mat::ones( ksize, ksize, CV_32F ) / (float)( ksize * ksize );
   
-  Mat maxavg_v;
-  dilate( v, maxavg_v, w );
-  filter2D( maxavg_v, maxavg_v, -1 , k );
+  Mat max_v;
+  dilate( v, max_v, w );
 
-  Mat minavg_v;
-  erode( v, minavg_v, w );
-  filter2D( minavg_v, minavg_v, -1 , k );
+  Mat min_v;
+  erode( v, min_v, w );
 
-  for ( int i = 0; i < minavg_v.rows; i++ ) {
+  Mat mask;
+  morphologyEx( v, mask, MORPH_GRADIENT, w );
+  threshold( mask, mask, 0.1, 1.0, THRESH_BINARY );
+  //imwrite_depth( "mask.pgm", mask, CV_8U );
+
+  Mat imask = -1*(mask - 1);
+  min_v = min_v.mul( mask ) + max_v.mul( imask ) - imask;
+  max_v = max_v.mul( mask ) + min_v.mul( imask ) + imask;
+
+  filter2D( min_v, min_v, -1 , k );
+  filter2D( max_v, max_v, -1 , k );
+  
+  //imwrite_depth( "min.pgm", min_v, CV_8U );
+  //imwrite_depth( "max.pgm", max_v, CV_8U );
+
+  for ( int i = 0; i < v.rows; i++ ) {
     float* v_i = v.ptr<float>(i);
-    float* min_i = minavg_v.ptr<float>(i);
-    float* max_i = maxavg_v.ptr<float>(i);
-    for ( int j = 0; j < minavg_v.cols; j++ ) {
+    float* min_i = min_v.ptr<float>(i);
+    float* max_i = max_v.ptr<float>(i);
+    for ( int j = 0; j < v.cols; j++ ) {
 	  float r = 1.0F / (max_i[j] - min_i[j]);
 	  v_i[j] = (v_i[j] - min_i[j]) * r;
 	}
@@ -136,7 +178,7 @@ static void normalize_value( InputOutputArray hsv, int ksize )
 
 int main( int argc, char** argv )
 {
-  if ( argc < 3 ) {
+  if ( argc < 2 ) {
 	help();
 	return 1;
   }
@@ -144,7 +186,7 @@ int main( int argc, char** argv )
   const char* operation = argv[1];
 
   if ( strncmp( operation, "normalize", 4 ) == 0 ) {
-	return normalize( argc - 1, argv + 1 );
+	return normalize_page( argc - 1, argv + 1 );
   } else {
 	help();
 	return 1;
