@@ -148,8 +148,7 @@ static void normalize_value( InputOutputArray hsv, int ksize )
   Mat min_v;
   erode( v, min_v, w );
 
-  Mat mask;
-  morphologyEx( v, mask, MORPH_GRADIENT, w );
+  Mat mask = max_v - min_v;
   threshold( mask, mask, 0.1, 1.0, THRESH_BINARY );
   //imwrite_depth( "mask.pgm", mask, CV_8U );
 
